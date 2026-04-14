@@ -8,25 +8,24 @@ const { spawn } = require('child_process');
 const app = express();
 const server = http.createServer(app);
 
-// ⭐ CORS কনফিগারেশন আপডেট করা হয়েছে
+// ⭐ Socket.IO CORS – তোমার Netlify URL যুক্ত করা হয়েছে
 const io = socketIo(server, {
   cors: {
     origin: [
-      'https://ytdownx.netlify.app/', // তোমার Netlify ডোমেইন বসাও
+      'https://ytdownx.netlify.app',     // 👈 তোমার আসল Netlify সাইট
       'http://localhost:3000',
       'http://localhost:5500',
       'http://127.0.0.1:5500'
-  
     ],
     methods: ['GET', 'POST'],
     credentials: true
   }
 });
 
-// ⭐ Express CORS middleware (REST API-র জন্য)
+// ⭐ Express CORS (REST API-র জন্য)
 app.use(cors({
   origin: [
-    'https://ytdownx.netlify.app/',
+    'https://ytdownx.netlify.app',
     'http://localhost:3000',
     'http://localhost:5500',
     'http://127.0.0.1:5500'
@@ -35,7 +34,7 @@ app.use(cors({
 }));
 
 app.use(express.json());
-app.use(express.static(path.join(__dirname, ''))); // যদি ফ্রন্টএন্ড ফাইল একসাথে থাকে
+app.use(express.static(path.join(__dirname, '')));
 
 const downloads = new Map();
 const YT_DLP_CMD = process.env.YT_DLP_CMD || 'yt-dlp';
@@ -100,9 +99,6 @@ app.post('/api/info', async (req, res) => {
       const info = JSON.parse(stdout);
       const duration = info.duration || 0;
 
-      // ========================
-      // ভিডিও ফরম্যাট (সব রেজোলিউশন, সর্বোচ্চ 1440p পর্যন্ত)
-      // ========================
       const videoFormatsMap = new Map();
 
       info.formats.forEach(f => {
@@ -150,9 +146,6 @@ app.post('/api/info', async (req, res) => {
         });
       }
 
-      // ========================
-      // অডিও ফরম্যাট
-      // ========================
       const audioFormats = info.formats
         .filter(f => f.acodec && f.acodec !== 'none' && (f.vcodec === 'none' || !f.vcodec))
         .sort((a, b) => (b.abr || 0) - (a.abr || 0))
@@ -279,7 +272,6 @@ io.on('connection', (socket) => {
       }
 
       console.log(`[download] শুরু: ${filename}`);
-      console.log(`[download] ফরম্যাট: ${formatString}`);
 
       const ytProc = spawn(YT_DLP_CMD, args);
       let downloadedBytes = 0;
