@@ -37,7 +37,7 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, '')));
 
 const downloads = new Map();
-const YT_DLP_CMD = process.env.YT_DLP_CMD || 'yt-dlp';
+const YT_DLP_CMD = process.env.YT_DLP_CMD || './yt-dlp';
 
 // সর্বোচ্চ রেজোলিউশন সীমা (2K = 1440p)
 const MAX_HEIGHT = 1440;
