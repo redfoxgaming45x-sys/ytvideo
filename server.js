@@ -7,37 +7,16 @@ const { spawn } = require('child_process');
 
 const app = express();
 const server = http.createServer(app);
-
-// ⭐ Socket.IO CORS – তোমার Netlify URL যুক্ত করা হয়েছে
 const io = socketIo(server, {
-  cors: {
-    origin: [
-      'https://ytdownx.netlify.app',     // 👈 তোমার আসল Netlify সাইট
-      'http://localhost:3000',
-      'http://localhost:5500',
-      'http://127.0.0.1:5500'
-    ],
-    methods: ['GET', 'POST'],
-    credentials: true
-  }
+  cors: { origin: "*", methods: ["GET", "POST"] }
 });
 
-// ⭐ Express CORS (REST API-র জন্য)
-app.use(cors({
-  origin: [
-    'https://ytdownx.netlify.app',
-    'http://localhost:3000',
-    'http://localhost:5500',
-    'http://127.0.0.1:5500'
-  ],
-  credentials: true
-}));
-
+app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '')));
 
 const downloads = new Map();
-const YT_DLP_CMD = process.env.YT_DLP_CMD || './yt-dlp';
+const YT_DLP_CMD = process.env.YT_DLP_CMD || 'yt-dlp';
 
 // সর্বোচ্চ রেজোলিউশন সীমা (2K = 1440p)
 const MAX_HEIGHT = 1440;
@@ -99,15 +78,21 @@ app.post('/api/info', async (req, res) => {
       const info = JSON.parse(stdout);
       const duration = info.duration || 0;
 
+      // ========================
+      // ভিডিও ফরম্যাট (সব রেজোলিউশন, সর্বোচ্চ 1440p পর্যন্ত)
+      // ========================
       const videoFormatsMap = new Map();
 
       info.formats.forEach(f => {
+        // শুধু ভিডিও স্ট্রিম (vcodec থাকতে হবে, height থাকতে হবে)
         if (!f.height || f.vcodec === 'none' || f.vcodec === null) return;
+        // সর্বোচ্চ 1440p পর্যন্ত
         if (f.height > MAX_HEIGHT) return;
 
         const height = f.height;
         const existing = videoFormatsMap.get(height);
 
+        // একই উচ্চতায় সেরা bitrate বেছে নেওয়া
         const currentTbr = f.tbr || f.vbr || 0;
         const existingTbr = existing ? (existing.tbr || existing.vbr || 0) : -1;
 
@@ -116,6 +101,7 @@ app.post('/api/info', async (req, res) => {
         }
       });
 
+      // উচ্চতা অনুযায়ী সাজানো (উচ্চ → নিম্ন)
       const videoFormats = Array.from(videoFormatsMap.entries())
         .sort((a, b) => b[0] - a[0])
         .map(([height, f]) => {
@@ -134,6 +120,7 @@ app.post('/api/info', async (req, res) => {
           };
         });
 
+      // fallback যদি কোনো format না পাওয়া যায়
       if (videoFormats.length === 0) {
         videoFormats.push({
           format_id: 'bestvideo[height<=1440]+bestaudio/best',
@@ -146,6 +133,9 @@ app.post('/api/info', async (req, res) => {
         });
       }
 
+      // ========================
+      // অডিও ফরম্যাট (শুধু অডিও স্ট্রিম)
+      // ========================
       const audioFormats = info.formats
         .filter(f => f.acodec && f.acodec !== 'none' && (f.vcodec === 'none' || !f.vcodec))
         .sort((a, b) => (b.abr || 0) - (a.abr || 0))
@@ -171,8 +161,10 @@ app.post('/api/info', async (req, res) => {
           };
         });
 
+      // সব অডিও ফরম্যাট দেখানো (সর্বোচ্চ ৫টি)
       const topAudioFormats = audioFormats.slice(0, 5);
 
+      // fallback
       if (topAudioFormats.length === 0) {
         topAudioFormats.push({
           format_id: 'bestaudio',
@@ -212,6 +204,7 @@ io.on('connection', (socket) => {
     const { url, formatId, type, height } = data;
     const socketId = socket.id;
 
+    // প্রথমে ভিডিও তথ্য আনা (ফাইলনাম জানার জন্য)
     const infoArgs = ['--dump-json', '--no-playlist', url];
     const infoProc = spawn(YT_DLP_CMD, infoArgs);
     let infoStdout = '';
@@ -234,15 +227,22 @@ io.on('connection', (socket) => {
       }
 
       const rawTitle = info.title || 'video';
+      // ফাইলনাম থেকে বিশেষ ক্যারেক্টার সরানো
       const safeTitle = rawTitle.replace(/[<>:"/\\|?*\x00-\x1F]/g, '').trim().slice(0, 100);
       const ext = type === 'audio' ? 'mp3' : 'mp4';
       const filename = `${safeTitle}.${ext}`;
 
+      // ========================
+      // ফরম্যাট স্ট্রিং নির্ধারণ
+      // ========================
       let formatString;
 
       if (type === 'audio') {
+        // সেরা অডিও, MP3 তে কনভার্ট করা হবে
         formatString = formatId !== 'bestaudio' ? formatId : 'bestaudio/best';
       } else if (type === 'video' && height) {
+        // নির্দিষ্ট উচ্চতার সেরা ভিডিও + সেরা অডিও মিলিয়ে
+        // 2K (1440p) সাপোর্টের জন্য VP9/AV1 কোডেক ও অন্তর্ভুক্ত
         formatString = [
           `bestvideo[height<=${height}][ext=mp4]+bestaudio[ext=m4a]`,
           `bestvideo[height<=${height}]+bestaudio`,
@@ -253,25 +253,32 @@ io.on('connection', (socket) => {
         formatString = formatId || 'bestvideo+bestaudio/best';
       }
 
+      // ========================
+      // yt-dlp ডাউনলোড আর্গুমেন্ট
+      // ========================
       const args = [
         url,
         '-f', formatString,
         '--no-playlist',
         '--merge-output-format', 'mp4',
-        '-o', '-'
+        '-o', '-'  // stdout এ আউটপুট
       ];
 
       if (type === 'audio') {
+        // অডিও এক্সট্র্যাক্ট করে MP3 তে রূপান্তর
         args.push(
           '-x',
           '--audio-format', 'mp3',
-          '--audio-quality', '0'
+          '--audio-quality', '0'  // সর্বোচ্চ মান
         );
       } else {
+        // ভিডিওর জন্য ffmpeg মার্জ করা
         args.push('--prefer-ffmpeg');
       }
 
       console.log(`[download] শুরু: ${filename}`);
+      console.log(`[download] ফরম্যাট: ${formatString}`);
+      console.log(`[download] আর্গুমেন্ট: yt-dlp ${args.join(' ')}`);
 
       const ytProc = spawn(YT_DLP_CMD, args);
       let downloadedBytes = 0;
@@ -280,6 +287,7 @@ io.on('connection', (socket) => {
 
       socket.emit('download-start', { filename, total: null });
 
+      // ভিডিও/অডিও চাংক পাঠানো
       ytProc.stdout.on('data', (chunk) => {
         downloadedBytes += chunk.length;
         socket.emit('download-chunk', chunk);
@@ -290,10 +298,12 @@ io.on('connection', (socket) => {
         });
       });
 
+      // stderr থেকে প্রগ্রেস পার্স করার চেষ্টা
       ytProc.stderr.on('data', (d) => {
         const line = d.toString();
         stderrBuffer += line;
 
+        // yt-dlp এর progress লাইন পার্স: [download]  45.2% of 123.45MiB
         const progressMatch = line.match(/\[download\]\s+([\d.]+)%\s+of\s+([\d.]+)(MiB|GiB|KiB)/i);
         if (progressMatch) {
           const percent = parseFloat(progressMatch[1]);
@@ -320,6 +330,7 @@ io.on('connection', (socket) => {
           socket.emit('download-complete');
         } else if (!hasError) {
           console.error(`[download] ত্রুটি কোড: ${code}`);
+          console.error('[download] stderr:', stderrBuffer.slice(-500));
           socket.emit('download-error', `ডাউনলোড ব্যর্থ হয়েছে (কোড: ${code})। অন্য মান চেষ্টা করুন।`);
         }
         downloads.delete(socketId);
@@ -336,6 +347,7 @@ io.on('connection', (socket) => {
     });
   });
 
+  // ডাউনলোড বাতিল
   socket.on('cancel-download', () => {
     const proc = downloads.get(socket.id);
     if (proc) {
@@ -349,6 +361,7 @@ io.on('connection', (socket) => {
     }
   });
 
+  // সংযোগ বিচ্ছিন্ন হলে প্রক্রিয়া বন্ধ
   socket.on('disconnect', () => {
     const proc = downloads.get(socket.id);
     if (proc) {
